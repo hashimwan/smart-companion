@@ -27,6 +27,42 @@ app.add_middleware(
     expose_headers=["X-Emotion", "X-Reply-Text"]
 )
 
+# ================= اختيار النموذج المتاح في حسابك تلقائياً =================
+ACTIVE_LLM_MODEL = None
+
+def get_working_groq_model() -> str:
+    global ACTIVE_LLM_MODEL
+    if ACTIVE_LLM_MODEL:
+        return ACTIVE_LLM_MODEL
+
+    res = requests.get(
+        "https://api.groq.com/openai/v1/models",
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+        timeout=10
+    )
+    if res.status_code == 200:
+        models = [
+            m["id"] for m in res.json().get("data", [])
+            if not any(x in m["id"].lower() for x in ["whisper", "guard", "tts", "embed", "vision"])
+        ]
+        # ترتيب الأفضلية للنماذج الأحدث فالأقدم
+        preferred = [
+            "llama-4", "llama-3.3", "llama-3.1", "llama3",
+            "qwen", "gemma2", "mixtral", "deepseek"
+        ]
+        for pref in preferred:
+            for m in models:
+                if pref in m.lower():
+                    ACTIVE_LLM_MODEL = m
+                    print(f"✅ تم اختيار النموذج المتاح تلقائياً: {ACTIVE_LLM_MODEL}")
+                    return ACTIVE_LLM_MODEL
+        if models:
+            ACTIVE_LLM_MODEL = models[0]
+            print(f"✅ تم اختيار النموذج المتاح تلقائياً: {ACTIVE_LLM_MODEL}")
+            return ACTIVE_LLM_MODEL
+
+    raise Exception(f"لم يتم العثور على نماذج نصية متاحة في حساب Groq: {res.text}")
+
 # ================= دوال قاعدة البيانات =================
 def get_all_tasks_text() -> str:
     rows = supabase.table("tasks").select("*").order("id", desc=False).execute().data
@@ -55,7 +91,7 @@ async def text_to_pcm16(text: str) -> bytes:
 SYSTEM_PROMPT = """
 أنت رفيق مكتبي ذكي وحيوي ومساعد شخصي لإدارة المهام (yearly, monthly, weekly, daily).
 تحدث باللهجة السعودية بأسلوب ودود ومختصر جداً (جملة أو جملتين كحد أقصى).
-يجب أن ترد دائماً بصيغة JSON فقط بهذا الهيكل الدقيق:
+يجب أن ترد دائماً بصيغة JSON فقط بهذا الهيكل الدقيق بدون أي نص إضافي خارجه:
 {
   "emotion": "HAPPY أو ANGRY أو REMIND أو NEUTRAL",
   "reply": "ردك الصوتي هنا باللهجة السعودية",
@@ -70,7 +106,7 @@ SYSTEM_PROMPT = """
   ]
 }
 ملاحظات:
-- إذا لم يطلب المستخدم تعديل مهام (مجرد سؤال أو دردشة أو استعلام عن الجدول)، اجعل "actions": [].
+- إذا لم يطلب المستخدم تعديل مهام، اجعل "actions": [].
 - عند الإضافة استخدم "type": "add" وحدد "title" و "scope" و "reminder_time".
 - عند إكمال مهمة استخدم "type": "complete" وضع رقمها في "task_id".
 - عند حذف مهمة استخدم "type": "delete" وضع رقمها في "task_id".
@@ -106,7 +142,8 @@ async def talk(request: Request):
             pcm_audio = await text_to_pcm16(reply_text)
             return Response(content=pcm_audio, media_type="application/octet-stream", headers={"X-Emotion": "NEUTRAL", "X-Reply-Text": quote(reply_text)})
 
-        # 2. إرسال النص مع جدول المهام الحالي إلى Llama 3.3
+        # 2. جلب النموذج المتاح في الحساب وإرسال الطلب
+        model_name = get_working_groq_model()
         current_tasks = get_all_tasks_text()
         user_prompt = (
             f"تاريخ اليوم: {date.today()} | الوقت الآن: {datetime.now().strftime('%H:%M')}\n"
@@ -121,7 +158,7 @@ async def talk(request: Request):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": model_name,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
@@ -132,9 +169,10 @@ async def talk(request: Request):
             timeout=20
         )
         if llm_res.status_code != 200:
-            raise Exception(f"Groq AI Error: {llm_res.text}")
+            raise Exception(f"Groq AI Error ({model_name}): {llm_res.text}")
 
-        ai_data = json.loads(llm_res.json()["choices"][0]["message"]["content"])
+        raw_content = llm_res.json()["choices"][0]["message"]["content"]
+        ai_data = json.loads(raw_content)
         emotion = ai_data.get("emotion", "NEUTRAL").upper()
         reply_text = ai_data.get("reply", "تم التنفيذ يا صاحبي.")
         actions = ai_data.get("actions", [])
