@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+supabase
+google-genai
+edge-tts
+miniaudio
+python-multipart

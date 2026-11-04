@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>تاسك مانيجر الرفيق الذكي</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen p-4 md:p-8 font-sans">
+  <div class="max-w-6xl mx-auto">
+    <h1 class="text-2xl md:text-3xl font-bold text-emerald-400 mb-6">🤖 لوحة المهام والتقويم الذكي</h1>
+
+    <!-- قسم محاكي الجهاز (اختبار الصوت) -->
+    <div class="bg-slate-800 p-6 rounded-xl border border-emerald-500/30 mb-8 text-center shadow-lg">
+      <h2 class="text-xl font-bold text-emerald-300 mb-4">🎙️ محاكي الجهاز (اضغط للتحدث، واضغط مرة ثانية للإرسال)</h2>
+      <button id="recordBtn" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-full shadow-lg transition-all">
+        🔘 اضغط لبدء التحدث
+      </button>
+      <p id="aiStatus" class="mt-4 text-sm text-slate-400 font-medium">حالة المشاعر (للوجه): <span>[NEUTRAL]</span></p>
+      <p id="aiReplyText" class="mt-2 text-md text-emerald-300 font-bold"></p>
+    </div>
+
+    <!-- نموذج إضافة مهمة يدوياً -->
+    <form id="taskForm" class="bg-slate-800 p-4 rounded-xl mb-8 grid grid-cols-1 md:grid-cols-5 gap-3">
+      <input id="title" type="text" placeholder="وش ناوي تنجز؟ (إضافة يدوية)" required class="p-2.5 rounded bg-slate-700 text-white md:col-span-2 focus:ring-2 outline-none">
+      <select id="scope" class="p-2.5 rounded bg-slate-700 text-white">
+        <option value="daily">مهمة يومية (Daily)</option>
+        <option value="weekly">هدف أسبوعي (Weekly)</option>
+        <option value="monthly">هدف شهري (Monthly)</option>
+        <option value="yearly">هدف سنوي (Yearly)</option>
+      </select>
+      <input id="reminder_time" type="time" class="p-2.5 rounded bg-slate-700 text-white" title="وقت التذكير الصوتي">
+      <button type="submit" class="bg-emerald-500 hover:bg-emerald-600 font-bold py-2.5 px-4 rounded transition">إضافة +</button>
+    </form>
+
+    <!-- الأعمدة الأربعة -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="bg-slate-800 p-4 rounded-xl border-t-4 border-emerald-400">
+        <h2 class="font-bold text-lg mb-3">📅 اليومي</h2><div id="list-daily" class="space-y-2"></div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded-xl border-t-4 border-sky-400">
+        <h2 class="font-bold text-lg mb-3">📆 الأسبوعي</h2><div id="list-weekly" class="space-y-2"></div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded-xl border-t-4 border-amber-400">
+        <h2 class="font-bold text-lg mb-3">🗓️ الشهري</h2><div id="list-monthly" class="space-y-2"></div>
+      </div>
+      <div class="bg-slate-800 p-4 rounded-xl border-t-4 border-purple-400">
+        <h2 class="font-bold text-lg mb-3">🎯 السنوي</h2><div id="list-yearly" class="space-y-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadTasks() {
+      const res = await fetch('/api/tasks');
+      const tasks = await res.json();
+      ['daily', 'weekly', 'monthly', 'yearly'].forEach(s => document.getElementById(`list-${s}`).innerHTML = '');
+
+      tasks.forEach(t => {
+        const div = document.createElement('div');
+        div.className = `p-3 rounded-lg flex items-center justify-between ${t.status === 'completed' ? 'bg-slate-700/40 line-through text-slate-400' : 'bg-slate-700'}`;
+        div.innerHTML = `
+          <div class="flex items-center gap-2">
+            <input type="checkbox" ${t.status === 'completed' ? 'checked' : ''} onchange="toggleTask(${t.id}, '${t.status}')" class="w-4 h-4 accent-emerald-500">
+            <div>
+              <p class="text-sm font-medium">${t.title}</p>
+              ${t.reminder_time ? `<span class="text-xs text-amber-300">⏰ ${t.reminder_time}</span>` : ''}
+            </div>
+          </div>
+          <button onclick="deleteTask(${t.id})" class="text-rose-400 hover:text-rose-300 text-xs">حذف</button>
+        `;
+        document.getElementById(`list-${t.scope}`).appendChild(div);
+      });
+    }
+
+    document.getElementById('taskForm').onsubmit = async (e) => {
+      e.preventDefault();
+      await fetch('/api/tasks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          title: document.getElementById('title').value,
+          scope: document.getElementById('scope').value,
+          reminder_time: document.getElementById('reminder_time').value || null
+        })
+      });
+      e.target.reset();
+      loadTasks();
+    };
+
+    async function toggleTask(id, currentStatus) {
+      await fetch(`/api/tasks/${id}`, { method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({status: currentStatus === 'completed' ? 'pending' : 'completed'})});
+      loadTasks();
+    }
+    async function deleteTask(id) { await fetch(`/api/tasks/${id}`, {method: 'DELETE'}); loadTasks(); }
+
+    loadTasks();
+    setInterval(loadTasks, 3000);
+
+    // ================== تشغيل الصوت الخام PCM 16-bit مباشرة ==================
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)({sampleRate: 16000});
+
+    function playRawPCM16(arrayBuffer) {
+      const int16Array = new Int16Array(arrayBuffer);
+      const float32Array = new Float32Array(int16Array.length);
+      for (let i = 0; i < int16Array.length; i++) {
+        float32Array[i] = int16Array[i] / 32768.0;
+      }
+      const audioBuffer = audioContext.createBuffer(1, float32Array.length, 16000);
+      audioBuffer.getChannelData(0).set(float32Array);
+      const source = audioContext.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContext.destination);
+      source.start(0);
+    }
+
+    // ================== التسجيل بنظام (ضغطة للبدء وضغطة للإرسال) ==================
+    let mediaRecorder;
+    let audioChunks = [];
+    let isRecording = false;
+    const recordBtn = document.getElementById('recordBtn');
+    const aiStatus = document.getElementById('aiStatus');
+    const aiReplyText = document.getElementById('aiReplyText');
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+
+      mediaRecorder.onstop = async () => {
+        recordBtn.innerText = "⏳ جاري التفكير...";
+        recordBtn.className = "bg-sky-600 text-white font-bold py-4 px-8 rounded-full shadow-lg";
+
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        audioChunks = [];
+
+        try {
+          const response = await fetch('/talk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'audio/webm' },
+            body: audioBlob
+          });
+
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || "خطأ في السيرفر");
+          }
+
+          const emotion = response.headers.get('X-Emotion') || 'NEUTRAL';
+          const replyText = decodeURIComponent(response.headers.get('X-Reply-Text') || '');
+          
+          aiStatus.innerHTML = `حالة المشاعر (للوجه): <span class="text-white font-bold">[${emotion}]</span>`;
+          aiReplyText.innerText = `💬 "${replyText}"`;
+
+          const arrayBuffer = await response.arrayBuffer();
+          playRawPCM16(arrayBuffer);
+          loadTasks();
+
+          recordBtn.innerText = "🔘 اضغط لبدء التحدث";
+          recordBtn.className = "bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-full shadow-lg";
+        } catch (error) {
+          console.error(error);
+          aiReplyText.innerText = "❌ خطأ: " + error.message;
+          recordBtn.innerText = "🔘 اضغط لبدء التحدث";
+          recordBtn.className = "bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 px-8 rounded-full shadow-lg";
+        }
+      };
+    });
+
+    recordBtn.addEventListener('click', async () => {
+      if (audioContext.state === 'suspended') await audioContext.resume();
+      if (!isRecording) {
+        audioChunks = [];
+        mediaRecorder.start();
+        isRecording = true;
+        recordBtn.innerText = "⏹️ جاري الاستماع... (اضغط هنا عند الانتهاء)";
+        recordBtn.className = "bg-rose-600 hover:bg-rose-500 text-white font-bold py-4 px-8 rounded-full shadow-lg animate-pulse";
+      } else {
+        mediaRecorder.stop();
+        isRecording = false;
+      }
+    });
+  </script>
+</body>
+</html>
