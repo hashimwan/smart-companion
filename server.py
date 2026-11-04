@@ -1,23 +1,22 @@
 import os
+import json
 import traceback
+import requests
 from urllib.parse import quote
 from datetime import datetime, date
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
-from google import genai
-from google.genai import types
 import edge_tts
 import miniaudio
 
 # ================= الإعدادات والمفاتيح =================
 SUPABASE_URL = "https://fdroxcyyyjdyqsgxxrki.supabase.co"
 SUPABASE_KEY = "sb_publishable_WKkcD4fhlfb7w5UDJi6_sA_eumblvtv"
-GEMINI_API_KEY = "AQ.Ab8RN6L-113uQFkTp57KfTgW7N8uF_oATz2VBNyGdL3qqcyoGw"
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "PUT_YOUR_GROQ_KEY_HERE").strip()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-ai_client = genai.Client(vertexai=True, api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 app.add_middleware(
@@ -28,40 +27,15 @@ app.add_middleware(
     expose_headers=["X-Emotion", "X-Reply-Text"]
 )
 
-# ================= أدوات التحكم بالتقويم (AI Tools) =================
-def add_task(title: str, scope: str, due_date: str = "", reminder_time: str = "") -> str:
-    """إضافة مهمة أو هدف جديد في التقويم.
-    scope يجب أن يكون: 'yearly' أو 'monthly' أو 'weekly' أو 'daily'.
-    due_date بصيغة YYYY-MM-DD (اختياري).
-    reminder_time بصيغة HH:MM بنظام 24 ساعة مثل 18:30 (اختياري).
-    """
-    data = {
-        "title": title,
-        "scope": scope.lower(),
-        "status": "pending",
-        "due_date": due_date if due_date else str(date.today()),
-        "reminder_time": reminder_time if reminder_time else None,
-        "notified": False
-    }
-    supabase.table("tasks").insert(data).execute()
-    return f"تمت إضافة ({title}) في تقويم ({scope}) بنجاح."
-
-def get_tasks(scope: str = "all", status: str = "pending") -> str:
-    """قراءة المهام الحالية من التقويم لمعرفة جدول المستخدم."""
-    query = supabase.table("tasks").select("*")
-    if scope != "all":
-        query = query.eq("scope", scope)
-    if status != "all":
-        query = query.eq("status", status)
-    rows = query.order("id", desc=False).execute().data
+# ================= دوال قاعدة البيانات =================
+def get_all_tasks_text() -> str:
+    rows = supabase.table("tasks").select("*").order("id", desc=False).execute().data
     if not rows:
-        return "لا توجد مهام مسجلة في هذا النطاق حالياً."
-    return "\n".join([f"- [ID:{r['id']}] ({r['scope']}) {r['title']} | الحالة: {r['status']} | التذكير: {r['reminder_time']}" for r in rows])
-
-def complete_task(task_id: int) -> str:
-    """تحديث حالة المهمة إلى مكتملة (completed) باستخدام رقم المعرف task_id."""
-    supabase.table("tasks").update({"status": "completed"}).eq("id", task_id).execute()
-    return f"تم تعليم المهمة رقم {task_id} كمكتملة."
+        return "لا توجد مهام مسجلة حالياً."
+    return "\n".join([
+        f"- ID:{r['id']} | النطاق:{r['scope']} | المهمة:{r['title']} | الحالة:{r['status']} | التذكير:{r['reminder_time']}"
+        for r in rows
+    ])
 
 # ================= تحويل النص إلى صوت خام PCM 16kHz =================
 async def text_to_pcm16(text: str) -> bytes:
@@ -79,14 +53,27 @@ async def text_to_pcm16(text: str) -> bytes:
     return decoded.samples.tobytes()
 
 SYSTEM_PROMPT = """
-أنت رفيق مكتبي ذكي وحيوي ومساعد شخصي لإدارة المهام (سنوي، شهري، أسبوعي، يومي).
-تحدث باللهجة السعودية بأسلوب ودود ومختصر جداً (جملة أو جملتين كحد أقصى لأن ردك سيُقرأ صوتياً).
-استخدم الأدوات المرفقة لإضافة المهام أو قراءتها أو إكمالها متى ما طلب المستخدم ذلك.
-مهم جداً: ابدأ ردك دائماً بوسم المشاعر المناسب بين قوسين مربعين من الخيارات التالية فقط:
-[HAPPY] إذا أنجز مهمة أو كان الحديث إيجابياً.
-[ANGRY] إذا تكاسل أو راكم المهام.
-[REMIND] عند تذكيره بمهامه أو جدوله.
-[NEUTRAL] للأسئلة العامة.
+أنت رفيق مكتبي ذكي وحيوي ومساعد شخصي لإدارة المهام (yearly, monthly, weekly, daily).
+تحدث باللهجة السعودية بأسلوب ودود ومختصر جداً (جملة أو جملتين كحد أقصى).
+يجب أن ترد دائماً بصيغة JSON فقط بهذا الهيكل الدقيق:
+{
+  "emotion": "HAPPY أو ANGRY أو REMIND أو NEUTRAL",
+  "reply": "ردك الصوتي هنا باللهجة السعودية",
+  "actions": [
+    {
+      "type": "add أو complete أو delete",
+      "title": "اسم المهمة عند الإضافة",
+      "scope": "daily أو weekly أو monthly أو yearly",
+      "reminder_time": "HH:MM بنظام 24 ساعة مثل 21:00 أو null",
+      "task_id": 1
+    }
+  ]
+}
+ملاحظات:
+- إذا لم يطلب المستخدم تعديل مهام (مجرد سؤال أو دردشة أو استعلام عن الجدول)، اجعل "actions": [].
+- عند الإضافة استخدم "type": "add" وحدد "title" و "scope" و "reminder_time".
+- عند إكمال مهمة استخدم "type": "complete" وضع رقمها في "task_id".
+- عند حذف مهمة استخدم "type": "delete" وضع رقمها في "task_id".
 """
 
 # ================= مسار التحدث الصوتي =================
@@ -96,32 +83,83 @@ async def talk(request: Request):
         audio_bytes = await request.body()
         raw_content_type = request.headers.get("Content-Type", "audio/wav")
         content_type = raw_content_type.split(";")[0].strip()
-        
-        print(f"🎤 وصل مقطع صوتي بحجم: {len(audio_bytes)} بايت | الصيغة: {content_type}")
-        today_str = f"تاريخ اليوم: {date.today()} والوقت الآن: {datetime.now().strftime('%H:%M')}"
+        filename = "audio.wav" if "wav" in content_type else "audio.webm"
 
-        response = ai_client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=[
-                types.Part.from_bytes(data=audio_bytes, mime_type=content_type),
-                f"{today_str}. استمع للمستخدم ونفذ طلبه بناءً على الأدوات المتاحة."
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                tools=[add_task, get_tasks, complete_task],
-                temperature=0.7,
-            ),
+        print(f"🎤 وصل مقطع صوتي بحجم: {len(audio_bytes)} بايت | الصيغة: {content_type}")
+
+        # 1. تحويل الصوت إلى نص عبر Groq Whisper
+        stt_res = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            files={"file": (filename, audio_bytes, content_type)},
+            data={"model": "whisper-large-v3-turbo"},
+            timeout=20
+        )
+        if stt_res.status_code != 200:
+            raise Exception(f"Groq Whisper Error: {stt_res.text}")
+
+        user_text = stt_res.json().get("text", "").strip()
+        print(f"🗣️ كلام المستخدم: {user_text}")
+
+        if not user_text:
+            reply_text = "ما سمعتك زين يا صاحبي، ارجع عيد كلامك."
+            pcm_audio = await text_to_pcm16(reply_text)
+            return Response(content=pcm_audio, media_type="application/octet-stream", headers={"X-Emotion": "NEUTRAL", "X-Reply-Text": quote(reply_text)})
+
+        # 2. إرسال النص مع جدول المهام الحالي إلى Llama 3.3
+        current_tasks = get_all_tasks_text()
+        user_prompt = (
+            f"تاريخ اليوم: {date.today()} | الوقت الآن: {datetime.now().strftime('%H:%M')}\n"
+            f"المهام المسجلة حالياً:\n{current_tasks}\n\n"
+            f"طلب المستخدم: {user_text}"
         )
 
-        reply_text = response.text or "[NEUTRAL] تم التنفيذ يا صاحبي."
-        emotion = "NEUTRAL"
-        for tag in ["HAPPY", "ANGRY", "REMIND", "NEUTRAL"]:
-            if f"[{tag}]" in reply_text:
-                emotion = tag
-                reply_text = reply_text.replace(f"[{tag}]", "").strip()
-                break
+        llm_res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.5,
+                "response_format": {"type": "json_object"}
+            },
+            timeout=20
+        )
+        if llm_res.status_code != 200:
+            raise Exception(f"Groq AI Error: {llm_res.text}")
 
-        print(f"🤖 رد الذكاء الاصطناعي [{emotion}]: {reply_text}")
+        ai_data = json.loads(llm_res.json()["choices"][0]["message"]["content"])
+        emotion = ai_data.get("emotion", "NEUTRAL").upper()
+        reply_text = ai_data.get("reply", "تم التنفيذ يا صاحبي.")
+        actions = ai_data.get("actions", [])
+
+        # 3. تنفيذ الأوامر في قاعدة البيانات
+        for act in actions:
+            act_type = act.get("type")
+            if act_type == "add" and act.get("title"):
+                scope = act.get("scope", "daily").lower()
+                if scope not in ["yearly", "monthly", "weekly", "daily"]:
+                    scope = "daily"
+                supabase.table("tasks").insert({
+                    "title": act["title"],
+                    "scope": scope,
+                    "status": "pending",
+                    "due_date": str(date.today()),
+                    "reminder_time": act.get("reminder_time") or None,
+                    "notified": False
+                }).execute()
+            elif act_type == "complete" and act.get("task_id"):
+                supabase.table("tasks").update({"status": "completed"}).eq("id", int(act["task_id"])).execute()
+            elif act_type == "delete" and act.get("task_id"):
+                supabase.table("tasks").delete().eq("id", int(act["task_id"])).execute()
+
+        print(f"🤖 الرد [{emotion}]: {reply_text} | الأوامر المنفذة: {len(actions)}")
         pcm_audio = await text_to_pcm16(reply_text)
 
         return Response(
