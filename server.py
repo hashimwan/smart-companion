@@ -17,7 +17,7 @@ SUPABASE_KEY = "sb_publishable_WKkcD4fhlfb7w5UDJi6_sA_eumblvtv"
 GEMINI_API_KEY = "AQ.Ab8RN6L-113uQFkTp57KfTgW7N8uF_oATz2VBNyGdL3qqcyoGw"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+ai_client = genai.Client(vertexai=True, api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 app.add_middleware(
