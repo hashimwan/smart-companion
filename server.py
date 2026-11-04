@@ -14,7 +14,7 @@ import miniaudio
 # ================= الإعدادات والمفاتيح =================
 SUPABASE_URL = "https://fdroxcyyyjdyqsgxxrki.supabase.co"
 SUPABASE_KEY = "sb_publishable_WKkcD4fhlfb7w5UDJi6_sA_eumblvtv"
-GEMINI_API_KEY = "AQ.Ab8RN6LRZK0Of7PaGajqSledRdsJnbqSbQxViRoY2wqRPWxQRQ"
+GEMINI_API_KEY = "AQ.Ab8RN6L-113uQFkTp57KfTgW7N8uF_oATz2VBNyGdL3qqcyoGw"
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
